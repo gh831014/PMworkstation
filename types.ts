@@ -40,6 +40,8 @@ export interface Member {
   role: string;
   status: 'active' | 'inactive';
   joinedAt: string;
+  password?: string;
+  expirationDate?: string;
 }
 
 export interface AppConfig {

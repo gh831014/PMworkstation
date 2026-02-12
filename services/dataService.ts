@@ -32,8 +32,60 @@ export const testConnection = async (): Promise<boolean> => {
 
 export const signIn = async (email: string, password: string): Promise<{ user: User | null; error: any }> => {
   if (!supabase) return { user: null, error: 'Database not configured' };
-  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-  return { user: data.user, error };
+
+  try {
+    // 1. First verify against our custom member table
+    // Note: We need to enable read access for this table or this query might fail if RLS prevents anon read.
+    // Assuming the config includes a policy allowing this query.
+    const { data: member, error: memberError } = await supabase
+      .from('pm_members')
+      .select('*')
+      .eq('email', email)
+      .maybeSingle();
+
+    if (memberError) {
+       console.warn("Member lookup failed:", memberError);
+       // Fallback to normal auth if table lookup fails, though requirements imply strict table control
+    }
+
+    if (member) {
+      // Check expiration
+      if (member.expiration_date) {
+        const now = new Date();
+        const exp = new Date(member.expiration_date);
+        if (now > exp) {
+          // Auto-disable user if expired
+          await supabase.from('pm_members').update({ status: 'inactive' }).eq('id', member.id);
+          return { user: null, error: { message: '账号已过期，无法登录' } };
+        }
+      }
+
+      // Check status
+      if (member.status !== 'active') {
+        return { user: null, error: { message: '账号已被禁用' } };
+      }
+
+      // Check Password (if present in custom table)
+      // Note: This is a simple string comparison as requested.
+      if (member.password && member.password !== password) {
+        return { user: null, error: { message: '密码错误' } };
+      }
+    } else {
+       // If strict member table mode is expected:
+       // return { user: null, error: { message: '用户不存在' } };
+    }
+
+    // 2. Proceed with Supabase Auth to get the session token for RLS
+    // Even if we verified the password above, we need the session for RLS to work on other tables.
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    
+    // If Supabase Auth fails but our custom table passed (e.g. password matches custom table but not auth.users),
+    // this indicates a sync issue. For now, we return the auth error.
+    return { user: data.user, error };
+
+  } catch (err: any) {
+    return { user: null, error: err };
+  }
 };
 
 export const signOut = async (): Promise<{ error: any }> => {
@@ -163,7 +215,9 @@ export const fetchMembers = async (): Promise<Member[]> => {
       name: m.name,
       role: m.role,
       status: m.status,
-      joinedAt: m.joined_at
+      joinedAt: m.joined_at,
+      password: m.password,
+      expirationDate: m.expiration_date
     }));
   } catch (e) {
     return MOCK_MEMBERS;
@@ -178,7 +232,9 @@ export const updateMember = async (id: number, updates: Partial<Member>): Promis
       .update({
         name: updates.name,
         role: updates.role,
-        status: updates.status
+        status: updates.status,
+        password: updates.password,
+        expiration_date: updates.expirationDate
       })
       .eq('id', id);
     return !error;

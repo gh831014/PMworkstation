@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { AppConfig, ToolConfig, Member } from '../types';
-import { Save, RefreshCw, Plus, Trash2, Database, Copy, Check, Terminal, Cpu, Users, Lock, Edit2 } from 'lucide-react';
+import { Save, RefreshCw, Plus, Trash2, Database, Copy, Check, Terminal, Cpu, Users, Lock, Edit2, Calendar } from 'lucide-react';
 import { testConnection, updatePassword, fetchMembers, updateMember } from '../services/dataService';
 import { CREATE_TABLE_SQL, CREATE_MEMBER_SQL } from '../constants';
 
@@ -102,7 +102,14 @@ export const Settings: React.FC<SettingsProps> = ({ config, onSave }) => {
   };
 
   const handleEditMember = (member: Member) => {
-    setEditingMember({ ...member });
+    // Format date for input if it exists
+    const formattedMember = { ...member };
+    if (formattedMember.expirationDate) {
+      // Ensure it matches yyyy-MM-dd format for date input, or keep as string if using text
+      // Simple slice for ISO strings
+      formattedMember.expirationDate = formattedMember.expirationDate.split('T')[0];
+    }
+    setEditingMember(formattedMember);
   };
 
   const saveMemberEdit = async () => {
@@ -307,15 +314,17 @@ export const Settings: React.FC<SettingsProps> = ({ config, onSave }) => {
                <div className="text-center py-8 text-slate-400">加载中...</div>
              ) : (
                <div className="overflow-x-auto">
-                 <table className="w-full text-left border-collapse">
+                 <table className="w-full text-left border-collapse min-w-[800px]">
                    <thead>
                      <tr className="bg-slate-50 text-slate-600 text-sm">
-                       <th className="p-3 border-b">ID</th>
-                       <th className="p-3 border-b">邮箱</th>
-                       <th className="p-3 border-b">姓名</th>
-                       <th className="p-3 border-b">角色</th>
-                       <th className="p-3 border-b">状态</th>
-                       <th className="p-3 border-b">操作</th>
+                       <th className="p-3 border-b w-16">ID</th>
+                       <th className="p-3 border-b w-48">邮箱</th>
+                       <th className="p-3 border-b w-32">姓名</th>
+                       <th className="p-3 border-b w-24">角色</th>
+                       <th className="p-3 border-b w-32">密码</th>
+                       <th className="p-3 border-b w-32">有效期</th>
+                       <th className="p-3 border-b w-24">状态</th>
+                       <th className="p-3 border-b w-24">操作</th>
                      </tr>
                    </thead>
                    <tbody>
@@ -328,7 +337,7 @@ export const Settings: React.FC<SettingsProps> = ({ config, onSave }) => {
                              <input 
                                value={editingMember.name || ''} 
                                onChange={(e) => setEditingMember({...editingMember, name: e.target.value})}
-                               className="px-2 py-1 border rounded text-sm w-32"
+                               className="px-2 py-1 border rounded text-sm w-24"
                              />
                            ) : member.name}
                          </td>
@@ -337,7 +346,7 @@ export const Settings: React.FC<SettingsProps> = ({ config, onSave }) => {
                              <select 
                                value={editingMember.role || 'member'} 
                                onChange={(e) => setEditingMember({...editingMember, role: e.target.value})}
-                               className="px-2 py-1 border rounded text-sm"
+                               className="px-2 py-1 border rounded text-sm w-20"
                              >
                                <option value="member">Member</option>
                                <option value="admin">Admin</option>
@@ -345,11 +354,32 @@ export const Settings: React.FC<SettingsProps> = ({ config, onSave }) => {
                            ) : <span className="px-2 py-0.5 bg-blue-50 text-blue-600 rounded text-xs">{member.role}</span>}
                          </td>
                          <td className="p-3">
+                            {editingMember?.id === member.id ? (
+                             <input 
+                               type="text"
+                               value={editingMember.password || ''} 
+                               onChange={(e) => setEditingMember({...editingMember, password: e.target.value})}
+                               placeholder="新密码"
+                               className="px-2 py-1 border rounded text-sm w-24 font-mono"
+                             />
+                           ) : <span className="text-slate-400 text-xs">******</span>}
+                         </td>
+                         <td className="p-3">
+                            {editingMember?.id === member.id ? (
+                             <input 
+                               type="date"
+                               value={editingMember.expirationDate || ''} 
+                               onChange={(e) => setEditingMember({...editingMember, expirationDate: e.target.value})}
+                               className="px-2 py-1 border rounded text-sm w-32"
+                             />
+                           ) : <span className={`text-xs ${member.expirationDate ? '' : 'text-slate-400'}`}>{member.expirationDate ? new Date(member.expirationDate).toLocaleDateString() : '永久'}</span>}
+                         </td>
+                         <td className="p-3">
                            {editingMember?.id === member.id ? (
                              <select 
                                value={editingMember.status || 'active'} 
                                onChange={(e) => setEditingMember({...editingMember, status: e.target.value as any})}
-                               className="px-2 py-1 border rounded text-sm"
+                               className="px-2 py-1 border rounded text-sm w-20"
                              >
                                <option value="active">正常</option>
                                <option value="disabled">禁用</option>
@@ -392,7 +422,7 @@ export const Settings: React.FC<SettingsProps> = ({ config, onSave }) => {
              </div>
              <h3 className="text-lg font-bold text-white mb-2">获取会员数据表 SQL</h3>
              <p className="text-sm text-slate-400 mb-4">
-               复制以下 SQL 并在 Supabase SQL Editor 中运行，以创建会员管理所需的数据库表。
+               复制以下 SQL 并在 Supabase SQL Editor 中运行，以创建会员管理所需的数据库表。包含密码存储和有效期字段。
              </p>
              <div className="relative">
                <pre className="bg-slate-900 p-4 rounded-lg text-xs font-mono text-green-400 overflow-x-auto h-48 border border-slate-700 custom-scrollbar">
