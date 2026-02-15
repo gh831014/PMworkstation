@@ -5,7 +5,7 @@ import { User } from '@supabase/supabase-js';
 
 import { AppConfig, ToolConfig, WorkStats, StudyPlanItem } from './types';
 import { DEFAULT_TOOLS, DEFAULT_SUPABASE_CONFIG, DEFAULT_AI_CONFIG } from './constants';
-import { initSupabase, fetchStats, fetchStudyPlan, getCurrentUser, signOut } from './services/dataService';
+import { initSupabase, fetchStats, fetchStudyPlan, getCurrentUser, signOut, fetchTools, getMemberRole } from './services/dataService';
 import { StatsChart } from './components/StatsChart';
 import { StudyCalendar } from './components/StudyCalendar';
 import { ToolGrid } from './components/ToolGrid';
@@ -134,7 +134,6 @@ const App: React.FC = () => {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
       const parsed = JSON.parse(saved);
-      // Ensure aiConfig exists for legacy saved data
       if (!parsed.aiConfig) {
         parsed.aiConfig = DEFAULT_AI_CONFIG;
       }
@@ -151,6 +150,7 @@ const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
   const [stats, setStats] = useState<WorkStats | null>(null);
   const [studyPlan, setStudyPlan] = useState<StudyPlanItem[]>([]);
+  const [tools, setTools] = useState<ToolConfig[]>(DEFAULT_TOOLS);
   const [loading, setLoading] = useState(true);
   const [dbStatus, setDbStatus] = useState({ isConnected: false, message: '' });
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
@@ -162,7 +162,7 @@ const App: React.FC = () => {
       const status = initSupabase(config);
       setDbStatus(status);
       
-      // Check for existing session
+      // Check for existing session first
       const currentUser = await getCurrentUser();
       setUser(currentUser);
       
@@ -175,10 +175,20 @@ const App: React.FC = () => {
 
   const loadUserData = async (userId?: string) => {
     setLoading(true);
-    const statsData = await fetchStats(userId);
-    const planData = await fetchStudyPlan(userId);
+    
+    // Fetch user role to determine tool visibility
+    const role = await getMemberRole(userId);
+    
+    // Fetch data in parallel
+    const [statsData, planData, dbTools] = await Promise.all([
+       fetchStats(userId),
+       fetchStudyPlan(userId),
+       fetchTools(role)
+    ]);
+
     setStats(statsData);
     setStudyPlan(planData);
+    setTools(dbTools);
     setLoading(false);
   };
 
@@ -195,7 +205,7 @@ const App: React.FC = () => {
   const handleLogout = async () => {
     await signOut();
     setUser(null);
-    await loadUserData(undefined); // Load mock data
+    await loadUserData(undefined); 
   };
 
   return (
@@ -256,7 +266,7 @@ const App: React.FC = () => {
           <Routes>
             <Route path="/" element={
               <HomePage 
-                tools={config.tools} 
+                tools={tools} 
                 stats={stats} 
                 studyPlan={studyPlan} 
                 loading={loading}

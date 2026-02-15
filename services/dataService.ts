@@ -1,6 +1,6 @@
 import { createClient, SupabaseClient, User } from '@supabase/supabase-js';
-import { AppConfig, DbConnectionStatus, WorkStats, StudyPlanItem, Member } from '../types';
-import { MOCK_STATS, MOCK_STUDY_PLAN, MOCK_MEMBERS } from '../constants';
+import { AppConfig, DbConnectionStatus, WorkStats, StudyPlanItem, Member, ToolConfig } from '../types';
+import { MOCK_STATS, MOCK_STUDY_PLAN, MOCK_MEMBERS, DEFAULT_TOOLS } from '../constants';
 
 let supabase: SupabaseClient | null = null;
 
@@ -30,13 +30,29 @@ export const testConnection = async (): Promise<boolean> => {
 
 // --- Auth Services ---
 
+export const getMemberRole = async (userId?: string): Promise<string> => {
+  if (!supabase || !userId) return 'guest';
+  try {
+    const { data, error } = await supabase
+      .from('pm_members')
+      .select('role')
+      .eq('user_id', userId)
+      .maybeSingle();
+      
+    if (error) {
+       // If searching by UUID fails, user might not be in pm_members yet
+       return 'member'; 
+    }
+    return data?.role || 'member';
+  } catch (e) {
+    return 'member';
+  }
+};
+
 export const signIn = async (email: string, password: string): Promise<{ user: User | null; error: any }> => {
   if (!supabase) return { user: null, error: 'Database not configured' };
 
   try {
-    // 1. First verify against our custom member table
-    // Note: We need to enable read access for this table or this query might fail if RLS prevents anon read.
-    // Assuming the config includes a policy allowing this query.
     const { data: member, error: memberError } = await supabase
       .from('pm_members')
       .select('*')
@@ -45,42 +61,28 @@ export const signIn = async (email: string, password: string): Promise<{ user: U
 
     if (memberError) {
        console.warn("Member lookup failed:", memberError);
-       // Fallback to normal auth if table lookup fails, though requirements imply strict table control
     }
 
     if (member) {
-      // Check expiration
       if (member.expiration_date) {
         const now = new Date();
         const exp = new Date(member.expiration_date);
         if (now > exp) {
-          // Auto-disable user if expired
           await supabase.from('pm_members').update({ status: 'inactive' }).eq('id', member.id);
           return { user: null, error: { message: '账号已过期，无法登录' } };
         }
       }
 
-      // Check status
       if (member.status !== 'active') {
         return { user: null, error: { message: '账号已被禁用' } };
       }
 
-      // Check Password (if present in custom table)
-      // Note: This is a simple string comparison as requested.
       if (member.password && member.password !== password) {
         return { user: null, error: { message: '密码错误' } };
       }
-    } else {
-       // If strict member table mode is expected:
-       // return { user: null, error: { message: '用户不存在' } };
     }
 
-    // 2. Proceed with Supabase Auth to get the session token for RLS
-    // Even if we verified the password above, we need the session for RLS to work on other tables.
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-    
-    // If Supabase Auth fails but our custom table passed (e.g. password matches custom table but not auth.users),
-    // this indicates a sync issue. For now, we return the auth error.
     return { user: data.user, error };
 
   } catch (err: any) {
@@ -109,10 +111,8 @@ export const updatePassword = async (newPassword: string): Promise<{ success: bo
 // --- Secure Link Generation ---
 
 export const generateSecureLink = async (targetUrl: string, user: User | null): Promise<string> => {
-  // Check if URL is valid
   if (!targetUrl || targetUrl === '#' || targetUrl.trim() === '') return '#';
   
-  // Create a payload with high security requirements (Timestamp, Nonce, User Info)
   const payload = JSON.stringify({
     uid: user ? user.id : 'guest',
     ts: Date.now(),
@@ -120,13 +120,8 @@ export const generateSecureLink = async (targetUrl: string, user: User | null): 
     role: 'pm_user'
   });
 
-  // In a real scenario, use AES-GCM via crypto.subtle. 
-  // For this frontend implementation, we simulate encryption using Base64 and a pseudo-signature.
-  // This satisfies "pass via ciphertext" and "prevent interception" in the context of a URL parameter.
-  
   const encodedPayload = btoa(unescape(encodeURIComponent(payload)));
   
-  // Simulate a signature (HMAC-like)
   const secret = "pm-workstation-secure-secret-2024";
   let hash = 0;
   const combined = encodedPayload + secret;
@@ -144,6 +139,98 @@ export const generateSecureLink = async (targetUrl: string, user: User | null): 
 };
 
 // --- Data Fetching ---
+
+export const fetchTools = async (role: string = 'guest'): Promise<ToolConfig[]> => {
+  if (!supabase) return DEFAULT_TOOLS;
+
+  try {
+    let query = supabase
+      .from('links')
+      .select('*')
+      .order('id', { ascending: true });
+
+    // Filter based on role
+    // If user is NOT admin, show only public links (is_admin_only is false)
+    if (role !== 'admin') {
+      query = query.eq('is_admin_only', false);
+    }
+
+    const { data, error } = await query;
+
+    if (error || !data || data.length === 0) {
+      if (role === 'admin' && (!data || data.length === 0)) {
+         // Return empty for admin to add
+         return [];
+      }
+      return DEFAULT_TOOLS;
+    }
+
+    // Map DB links to ToolConfig
+    return data.map((link: any, index: number) => {
+      // Assign an image. Cycle through the default tools' images to maintain aesthetic.
+      const imageIndex = index % DEFAULT_TOOLS.length;
+      const fallbackImage = DEFAULT_TOOLS[imageIndex].image;
+
+      return {
+        id: link.id.toString(),
+        name: link.title,
+        url: link.url,
+        iconName: link.icon_name || 'Globe',
+        description: link.description || '',
+        image: fallbackImage, // Database doesn't store images, reuse SVGs
+        isAdminOnly: !!link.is_admin_only
+      };
+    });
+  } catch (error) {
+    console.error("Failed to fetch tools:", error);
+    return DEFAULT_TOOLS;
+  }
+};
+
+// --- Tool Management (CRUD) ---
+
+export const addTool = async (tool: Partial<ToolConfig>): Promise<boolean> => {
+  if (!supabase) return false;
+  try {
+    const { error } = await supabase.from('links').insert([{
+      title: tool.name,
+      url: tool.url,
+      description: tool.description,
+      icon_name: tool.iconName,
+      type: 'tools', // Default type
+      is_admin_only: tool.isAdminOnly
+    }]);
+    return !error;
+  } catch (e) {
+    return false;
+  }
+};
+
+export const updateTool = async (id: string, updates: Partial<ToolConfig>): Promise<boolean> => {
+  if (!supabase) return false;
+  try {
+    const { error } = await supabase.from('links').update({
+      title: updates.name,
+      url: updates.url,
+      description: updates.description,
+      icon_name: updates.iconName,
+      is_admin_only: updates.isAdminOnly
+    }).eq('id', parseInt(id));
+    return !error;
+  } catch (e) {
+    return false;
+  }
+};
+
+export const deleteTool = async (id: string): Promise<boolean> => {
+  if (!supabase) return false;
+  try {
+    const { error } = await supabase.from('links').delete().eq('id', parseInt(id));
+    return !error;
+  } catch (e) {
+    return false;
+  }
+};
 
 export const fetchStats = async (userId?: string): Promise<WorkStats> => {
   if (!supabase || !userId) return MOCK_STATS;
@@ -176,23 +263,53 @@ export const fetchStudyPlan = async (userId?: string): Promise<StudyPlanItem[]> 
   if (!supabase || !userId) return MOCK_STUDY_PLAN;
 
   try {
-    const { data, error } = await supabase
-      .from('pm_study_plan')
-      .select('*')
+    // Check for a plan in study_plans table
+    const { data: plans, error } = await supabase
+      .from('study_plans')
+      .select('tasks')
       .eq('user_id', userId)
-      .order('date', { ascending: true });
+      .order('created_at', { ascending: false })
+      .limit(1);
 
-    if (error || !data || data.length === 0) return MOCK_STUDY_PLAN;
+    if (error || !plans || plans.length === 0) {
+      // Fallback to old table if new one has no data (or return mock if prefer)
+      const { data: oldData } = await supabase
+        .from('pm_study_plan')
+        .select('*')
+        .eq('user_id', userId)
+        .order('date', { ascending: true });
+
+      if (oldData && oldData.length > 0) {
+          return oldData.map((item: any) => ({
+            id: item.id,
+            date: item.date,
+            task: item.task,
+            status: item.status,
+            isMilestone: item.is_milestone,
+            suggestion: item.suggestion
+          }));
+      }
+      return MOCK_STUDY_PLAN;
+    }
     
-    return data.map((item: any) => ({
-      id: item.id,
-      date: item.date,
-      task: item.task,
-      status: item.status,
-      isMilestone: item.is_milestone,
-      suggestion: item.suggestion
+    // Parse tasks from JSONB
+    const latestPlan = plans[0];
+    const tasks = latestPlan.tasks;
+
+    if (!Array.isArray(tasks)) return MOCK_STUDY_PLAN;
+
+    // Map JSONB tasks to StudyPlanItem
+    return tasks.map((t: any, idx: number) => ({
+      id: t.id || `task-${idx}`,
+      date: t.date || new Date().toISOString().split('T')[0],
+      task: t.task || 'Unnamed Task',
+      status: t.status || 'pending',
+      isMilestone: !!t.isMilestone,
+      suggestion: t.suggestion || ''
     }));
+
   } catch (error) {
+    console.error("Error fetching study plan:", error);
     return MOCK_STUDY_PLAN;
   }
 };

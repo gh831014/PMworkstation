@@ -25,6 +25,7 @@ export interface ToolConfig {
   iconName: string; // We will map this string to an actual icon component
   description: string;
   image: string;
+  isAdminOnly: boolean;
 }
 
 export interface AiConfig {
